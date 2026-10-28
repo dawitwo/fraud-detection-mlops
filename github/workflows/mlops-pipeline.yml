@@ -1,0 +1,58 @@
+# .github/workflows/mlops-pipeline.yml
+name: MLOps Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  schedule:
+    - cron: '0 0 * * 0'  # Weekly on Sunday
+  workflow_dispatch:      # Manual trigger
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run tests
+        run: pytest tests/ -v
+
+  drift-check-and-retrain:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      
+      - name: Download Data (Placeholder)
+        run: |
+          echo "In a real pipeline, download from S3/GCS. For demo, we assume data/ is committed or restored from cache."
+          # For the portfolio project, you can commit a small sample or use a public URL.
+          # wget -O data/creditcard.csv <PUBLIC_URL>
+      
+      - name: Run Drift Detection
+        id: drift
+        run: |
+          python monitoring/drift_detector.py
+          echo "DRIFT_SHARE=$(python -c 'from monitoring.drift_detector import simulate_drift_and_monitor; print(simulate_drift_and_monitor())')" >> $GITHUB_OUTPUT
+      
+      - name: Retrain Model if Drift Detected
+        if: steps.drift.outputs.DRIFT_SHARE > 0.5
+        run: |
+          python -m src.preprocessing
+          python -m src.train
+      
+      - name: Build and Push Docker Image
+        if: steps.drift.outputs.DRIFT_SHARE > 0.5
+        run: |
+          docker build -t ghcr.io/${{ github.repository }}/fraud-api:${{ github.sha }} .
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          docker push ghcr.io/${{ github.repository }}/fraud-api:${{ github.sha }}
